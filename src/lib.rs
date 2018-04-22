@@ -1,4 +1,9 @@
 
+///
+/// [1]: https://github.com/GNOME/gtk/blob/master/docs/iconcache.txt
+/// [2]: https://codereview.qt-project.org/#/c/125379/9/src/gui/image/qiconloader.cpp
+///
+
 #[macro_use]
 extern crate bitflags;
 
