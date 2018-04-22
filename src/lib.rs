@@ -41,7 +41,9 @@ trait IconCacheReadHelper {
     fn read16(&mut self) -> Result<CARD16>;
 
     fn read32(&mut self) -> Result<CARD32>;
-    fn read32_from(&mut self, offset: u64) -> Result<CARD32>;
+    fn read32_from(&mut self, offset: u64) -> Result<CARD32> {
+        self.seek(offset).and_then(|_| self.read32())
+    }
 
     fn read_icon_flag(&mut self) -> Result<GtkIconFlag>;
 
@@ -68,10 +70,6 @@ impl IconCacheReadHelper for BufReader<File> {
            (buf32[1] as CARD32) << 16 |
            (buf32[2] as CARD32) <<  8 |
            (buf32[3] as CARD32))
-    }
-
-    fn read32_from(&mut self, offset: u64) -> Result<CARD32> {
-        self.seek(offset).and_then(|_| self.read32())
     }
 
     fn read_icon_flag(&mut self) -> Result<GtkIconFlag> {
@@ -147,11 +145,20 @@ impl GtkIconCache {
 
         let mut bucket_offset = self.reader.read32_from(offset as u64)?;
 
+        while let Ok(name_offset) = self.reader.read32_from(Wrapping(bucket_offset as u64 + 4).0) {
+            // read name
+            if let Ok(_) = self.reader.seek(name_offset as u64) {
+                let mut buf = vec![];
+                self.reader.read_until(b'\0', &mut buf)?;
+                println!("{}", String::from_utf8_lossy(&buf[..]));
+            }
+
+            bucket_offset = self.reader.read32_from(bucket_offset as u64)?;
+        }
+
         Ok(r)
     }
 }
-
-
 
 fn icon_name_hash<T: AsRef<str>>(name: T) -> u32 {
     name.as_ref().as_bytes().iter().fold(Wrapping(0), |r, &c| (r << 5) - r + Wrapping(c as u32)).0
@@ -166,12 +173,21 @@ mod test {
     #[test]
     fn test_icon_cache() {
         let path = "/usr/share/icons/Flattr/icon-theme.cache".parse().unwrap();
-        let icon_cache = GtkIconCache::with_file_path(path).unwrap();
+        let mut icon_cache = GtkIconCache::with_file_path(path).unwrap();
 
         let icon_name = "firefox";
         let icon_hash = icon_name_hash(icon_name);
 
         println!("{:?}", icon_hash);
         println!("{:?}", icon_cache.hash_offset);
+        println!("{:?}", icon_cache.lookup("firefox"));
+    }
+
+    #[test]
+    fn test_icon_name_hash() {
+        assert_eq!(
+            icon_name_hash("firefox") % 12,
+            icon_name_hash("image-generic") % 12
+        );
     }
 }
