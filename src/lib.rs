@@ -7,6 +7,7 @@ use std::io::{SeekFrom, ErrorKind, Result, BufRead, Error, Read, BufReader};
 use std::num::Wrapping;
 use std::fs::File;
 use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
 
 type CARD16 = u16;
 type CARD32 = u32;
@@ -20,14 +21,14 @@ bitflags! {
     }
 }
 
-struct GtkIconCache {
-    // header
+pub struct GtkIconCache {
     hash_offset: CARD32,
     directory_list_offset: CARD32,
 
-    // hash
+    n_directorys: CARD32,
     n_buckets: CARD32,
 
+    dir_names: HashMap<CARD32, String>,
     reader: BufReader<File>,
 }
 
@@ -39,6 +40,9 @@ struct GtkIconImage {
 
 trait IconCacheReadHelper {
     fn read16(&mut self) -> Result<CARD16>;
+    fn read16_from(&mut self, offset: u64) -> Result<CARD16> {
+        self.seek(offset).and_then(|_| self.read16())
+    }
 
     fn read32(&mut self) -> Result<CARD32>;
     fn read32_from(&mut self, offset: u64) -> Result<CARD32> {
@@ -48,6 +52,11 @@ trait IconCacheReadHelper {
     fn read_icon_flag(&mut self) -> Result<GtkIconFlag>;
 
     fn read_image(&mut self) -> Result<GtkIconImage>;
+
+    fn read_cstring(&mut self) -> Result<String>;
+    fn read_cstring_from(&mut self, offset: u64) -> Result<String> {
+        self.seek(offset).and_then(|_| self.read_cstring())
+    }
 
     fn seek(&mut self, offset: u64) -> Result<u64>;
 }
@@ -86,6 +95,12 @@ impl IconCacheReadHelper for BufReader<File> {
         })
     }
 
+    fn read_cstring(&mut self) -> Result<String> {
+        let mut buf = vec![];
+        self.read_until(b'\0', &mut buf)?;
+        Ok(String::from_utf8_lossy(&buf[0..buf.len() - 1]).to_string())
+    }
+
     fn seek(&mut self, offset: u64) -> Result<u64> {
         io::Seek::seek(self, SeekFrom::Start(offset))
     }
@@ -111,13 +126,11 @@ impl GtkIconCache {
         let n_directorys = rdr.read32_from(directory_list_offset as u64)?;
 
         // dump directories
+        let mut dir_names = HashMap::new();
         for i in 0..n_directorys {
             let offset = rdr.read32_from((directory_list_offset + 4 + 4 * i) as u64)?;
-
-            if let Ok(_) = rdr.seek(offset as u64) {
-                let mut buf = vec![];
-                rdr.read_until(b'\0', &mut buf)?;
-                println!("{}", String::from_utf8_lossy(&buf[..]));
+            if let Ok(dir) = rdr.read_cstring_from(offset as u64) {
+                dir_names.insert(offset, dir);
             }
         }
 
@@ -129,34 +142,48 @@ impl GtkIconCache {
             hash_offset,
             directory_list_offset,
 
+            n_directorys,
             n_buckets,
 
+            dir_names,
             reader: rdr,
         })
     }
 
-    pub fn lookup<T: AsRef<str>>(&mut self, name: T) -> Result<Vec<String>> {
-        let mut r = vec![];
-
-        let icon_hash = icon_name_hash(name);
+    pub fn lookup<T: AsRef<str>>(&mut self, name: T) -> Result<Vec<&String>> {
+        let icon_hash = icon_name_hash(name.as_ref());
         let bucket_index = icon_hash % self.n_buckets;
-
         let offset = self.hash_offset + 4 + bucket_index * 4;
 
         let mut bucket_offset = self.reader.read32_from(offset as u64)?;
+        while let Ok(bucket_name) = self.reader.read32_from(Wrapping(bucket_offset as u64 + 4).0) {
+            // read bucket name
+            if let Ok(cache) = self.reader.read_cstring_from(bucket_name as u64) {
+                if cache == name.as_ref() {
+                    let list_offset = bucket_offset + 8;
+                    let list_len = self.reader.read32_from(list_offset as u64)?;
 
-        while let Ok(name_offset) = self.reader.read32_from(Wrapping(bucket_offset as u64 + 4).0) {
-            // read name
-            if let Ok(_) = self.reader.seek(name_offset as u64) {
-                let mut buf = vec![];
-                self.reader.read_until(b'\0', &mut buf)?;
-                println!("{}", String::from_utf8_lossy(&buf[..]));
+                    let mut r = HashSet::with_capacity(list_len as usize);
+                    // read cached dirs
+                    for i in 0..list_len {
+                        if let Ok(dir_index) = self.reader.read16_from((list_offset + 4 + 8 * i) as u64) {
+                            if let Ok(offset) = self.reader.read32_from(self.directory_list_offset as u64 + 4 + (dir_index as u64) * 4) {
+                                r.insert(offset);
+                            }
+                        }
+                    }
+
+                    let ref dir_names = self.dir_names;
+                    return Ok(r.iter().map(|x| dir_names.get(&x).unwrap()).collect())
+                }
             }
 
+            // find in next bucket
             bucket_offset = self.reader.read32_from(bucket_offset as u64)?;
         }
 
-        Ok(r)
+        // not found
+        Ok(vec![])
     }
 }
 
