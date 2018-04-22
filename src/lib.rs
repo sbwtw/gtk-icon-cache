@@ -2,7 +2,9 @@
 #[macro_use]
 extern crate bitflags;
 
-use std::io::*;
+use std::io;
+use std::io::{SeekFrom, ErrorKind, Result, BufRead, Error, Read, BufReader};
+use std::num::Wrapping;
 use std::fs::File;
 use std::path::PathBuf;
 
@@ -39,10 +41,13 @@ trait IconCacheReadHelper {
     fn read16(&mut self) -> Result<CARD16>;
 
     fn read32(&mut self) -> Result<CARD32>;
+    fn read32_from(&mut self, offset: u64) -> Result<CARD32>;
 
     fn read_icon_flag(&mut self) -> Result<GtkIconFlag>;
 
     fn read_image(&mut self) -> Result<GtkIconImage>;
+
+    fn seek(&mut self, offset: u64) -> Result<u64>;
 }
 
 impl IconCacheReadHelper for BufReader<File> {
@@ -65,6 +70,10 @@ impl IconCacheReadHelper for BufReader<File> {
            (buf32[3] as CARD32))
     }
 
+    fn read32_from(&mut self, offset: u64) -> Result<CARD32> {
+        self.seek(offset).and_then(|_| self.read32())
+    }
+
     fn read_icon_flag(&mut self) -> Result<GtkIconFlag> {
         let flag = self.read16()?;
 
@@ -77,6 +86,10 @@ impl IconCacheReadHelper for BufReader<File> {
             flags: self.read_icon_flag()?,
             image_data_offset: self.read32()?,
         })
+    }
+
+    fn seek(&mut self, offset: u64) -> Result<u64> {
+        io::Seek::seek(self, SeekFrom::Start(offset))
     }
 }
 
@@ -97,42 +110,68 @@ impl GtkIconCache {
         let directory_list_offset = rdr.read32()?;
 
         // directory list
-        rdr.seek(SeekFrom::Start(directory_list_offset as u64))?;
-        let n_directorys = rdr.read32()?;
+        let n_directorys = rdr.read32_from(directory_list_offset as u64)?;
 
         // dump directories
         for i in 0..n_directorys {
-            rdr.seek(SeekFrom::Start((directory_list_offset + 4 + 4 * i) as u64))?;
-            let offset = rdr.read32()?;
+            let offset = rdr.read32_from((directory_list_offset + 4 + 4 * i) as u64)?;
 
-            if let Ok(_) = rdr.seek(SeekFrom::Start(offset as u64)) {
+            if let Ok(_) = rdr.seek(offset as u64) {
                 let mut buf = vec![];
                 rdr.read_until(b'\0', &mut buf)?;
                 println!("{}", String::from_utf8_lossy(&buf[..]));
             }
         }
 
+        // hash bucket count
+        rdr.seek(hash_offset as u64)?;
+        let n_buckets = rdr.read32()?;
+
         Ok(GtkIconCache {
             hash_offset,
             directory_list_offset,
 
-            n_buckets: 0,
+            n_buckets,
 
             reader: rdr,
         })
     }
+
+    pub fn lookup<T: AsRef<str>>(&mut self, name: T) -> Result<Vec<String>> {
+        let mut r = vec![];
+
+        let icon_hash = icon_name_hash(name);
+        let bucket_index = icon_hash % self.n_buckets;
+
+        let offset = self.hash_offset + 4 + bucket_index * 4;
+
+        let mut bucket_offset = self.reader.read32_from(offset as u64)?;
+
+        Ok(r)
+    }
+}
+
+
+
+fn icon_name_hash<T: AsRef<str>>(name: T) -> u32 {
+    name.as_ref().as_bytes().iter().fold(Wrapping(0), |r, &c| (r << 5) - r + Wrapping(c as u32)).0
 }
 
 #[cfg(test)]
 mod test {
 
     use GtkIconCache;
+    use icon_name_hash;
 
     #[test]
     fn test_icon_cache() {
         let path = "/usr/share/icons/Flattr/icon-theme.cache".parse().unwrap();
         let icon_cache = GtkIconCache::with_file_path(path).unwrap();
 
+        let icon_name = "firefox";
+        let icon_hash = icon_name_hash(icon_name);
+
+        println!("{:?}", icon_hash);
         println!("{:?}", icon_cache.hash_offset);
     }
 }
