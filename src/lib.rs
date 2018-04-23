@@ -26,7 +26,7 @@ bitflags! {
     }
 }
 
-pub struct GtkIconCache {
+pub struct GtkIconCache<R: Read> {
     hash_offset: CARD32,
     directory_list_offset: CARD32,
 
@@ -34,7 +34,7 @@ pub struct GtkIconCache {
     n_buckets: CARD32,
 
     dir_names: HashMap<CARD32, String>,
-    reader: BufReader<File>,
+    reader: BufReader<R>,
 }
 
 struct GtkIconImage {
@@ -66,7 +66,7 @@ trait IconCacheReadHelper {
     fn seek(&mut self, offset: u64) -> Result<u64>;
 }
 
-impl IconCacheReadHelper for BufReader<File> {
+impl<R: Read + io::Seek> IconCacheReadHelper for BufReader<R> {
     fn read16(&mut self) -> Result<CARD16> {
         let mut buf16 = [0; 2];
 
@@ -111,7 +111,7 @@ impl IconCacheReadHelper for BufReader<File> {
     }
 }
 
-impl GtkIconCache {
+impl GtkIconCache<File> {
     pub fn with_file_path(path: PathBuf) -> Result<Self> {
         // read data
         let f = File::open(&path)?;
@@ -143,7 +143,7 @@ impl GtkIconCache {
         rdr.seek(hash_offset as u64)?;
         let n_buckets = rdr.read32()?;
 
-        Ok(GtkIconCache {
+        Ok(Self {
             hash_offset,
             directory_list_offset,
 
@@ -154,7 +154,9 @@ impl GtkIconCache {
             reader: rdr,
         })
     }
+}
 
+impl<R: Read + io::Seek> GtkIconCache<R> {
     pub fn lookup<T: AsRef<str>>(&mut self, name: T) -> Result<Vec<&String>> {
         let icon_hash = icon_name_hash(name.as_ref());
         let bucket_index = icon_hash % self.n_buckets;
