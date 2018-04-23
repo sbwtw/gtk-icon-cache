@@ -1,11 +1,23 @@
-
-///
-/// [1]: https://github.com/GNOME/gtk/blob/master/docs/iconcache.txt
-/// [2]: https://codereview.qt-project.org/#/c/125379/9/src/gui/image/qiconloader.cpp
-///
-
-#[macro_use]
-extern crate bitflags;
+//!
+//! This crate provide a reader for gtk-icon-cache file.
+//!
+//! ```
+//! use gtk_icon_cache::*;
+//!
+//! let path = "test/caches/icon-theme.cache".parse().unwrap();
+//! let mut icon_cache = GtkIconCache::with_file_path(path).unwrap();
+//!
+//! // lookup for `firefox`
+//! let dirs = icon_cache.lookup("firefox").unwrap();
+//!
+//! // icon should be found in apps/64
+//! assert!(dirs.contains(&&"apps/64".to_string()));
+//! ```
+//!
+//! _See_:
+//! - [GTK icon-cache specific](https://github.com/GNOME/gtk/blob/master/docs/iconcache.txt)
+//! - [Qt icon loader](https://codereview.qt-project.org/#/c/125379/9/src/gui/image/qiconloader.cpp)
+//!
 
 use std::io;
 use std::io::{SeekFrom, ErrorKind, Result, BufRead, Error, Read, BufReader};
@@ -17,30 +29,17 @@ use std::collections::{HashMap, HashSet};
 type CARD16 = u16;
 type CARD32 = u32;
 
-bitflags! {
-    struct GtkIconFlag: CARD16 {
-        const HAS_SUFFIX_PNG = 0b00000001;
-        const HAS_SUFFIX_XPM = 0b00000010;
-        const HAS_SUFFIX_SVG = 0b00000100;
-        const HAS_ICON_FILE  = 0b00001000;
-    }
-}
-
+///
+/// GtkIconCache
+///
 pub struct GtkIconCache<R: Read> {
     hash_offset: CARD32,
     directory_list_offset: CARD32,
 
-    n_directorys: CARD32,
     n_buckets: CARD32,
 
     dir_names: HashMap<CARD32, String>,
     reader: BufReader<R>,
-}
-
-struct GtkIconImage {
-    directory_index: CARD16,
-    flags: GtkIconFlag,
-    image_data_offset: CARD32,
 }
 
 trait IconCacheReadHelper {
@@ -53,10 +52,6 @@ trait IconCacheReadHelper {
     fn read32_from(&mut self, offset: u64) -> Result<CARD32> {
         self.seek(offset).and_then(|_| self.read32())
     }
-
-    fn read_icon_flag(&mut self) -> Result<GtkIconFlag>;
-
-    fn read_image(&mut self) -> Result<GtkIconImage>;
 
     fn read_cstring(&mut self) -> Result<String>;
     fn read_cstring_from(&mut self, offset: u64) -> Result<String> {
@@ -86,20 +81,6 @@ impl<R: Read + io::Seek> IconCacheReadHelper for BufReader<R> {
            (buf32[3] as CARD32))
     }
 
-    fn read_icon_flag(&mut self) -> Result<GtkIconFlag> {
-        let flag = self.read16()?;
-
-        Ok(GtkIconFlag::from_bits(flag).unwrap())
-    }
-
-    fn read_image(&mut self) -> Result<GtkIconImage> {
-        Ok(GtkIconImage {
-            directory_index: self.read16()?,
-            flags: self.read_icon_flag()?,
-            image_data_offset: self.read32()?,
-        })
-    }
-
     fn read_cstring(&mut self) -> Result<String> {
         let mut buf = vec![];
         self.read_until(b'\0', &mut buf)?;
@@ -112,10 +93,15 @@ impl<R: Read + io::Seek> IconCacheReadHelper for BufReader<R> {
 }
 
 impl GtkIconCache<File> {
+    ///
+    /// Create with a cache file.
+    ///
+    /// * `path` - Cache file path.
+    ///
     pub fn with_file_path(path: PathBuf) -> Result<Self> {
         // read data
         let f = File::open(&path)?;
-        let last_modified = f.metadata().and_then(|x| x.modified()).ok();
+        let _last_modified = f.metadata().and_then(|x| x.modified()).ok();
         let mut rdr = BufReader::new(f);
 
         let major_version = rdr.read16()?;
@@ -147,7 +133,6 @@ impl GtkIconCache<File> {
             hash_offset,
             directory_list_offset,
 
-            n_directorys,
             n_buckets,
 
             dir_names,
@@ -157,6 +142,11 @@ impl GtkIconCache<File> {
 }
 
 impl<R: Read + io::Seek> GtkIconCache<R> {
+    ///
+    /// Look up an icon.
+    ///
+    /// * `name` - icon name.
+    ///
     pub fn lookup<T: AsRef<str>>(&mut self, name: T) -> Result<Vec<&String>> {
         let icon_hash = icon_name_hash(name.as_ref());
         let bucket_index = icon_hash % self.n_buckets;
@@ -206,15 +196,15 @@ mod test {
 
     #[test]
     fn test_icon_cache() {
-        let path = "/usr/share/icons/Flattr/icon-theme.cache".parse().unwrap();
+        let path = "test/caches/icon-theme.cache".parse().unwrap();
         let mut icon_cache = GtkIconCache::with_file_path(path).unwrap();
 
-        let icon_name = "firefox";
+        let icon_name = "web-browser";
         let icon_hash = icon_name_hash(icon_name);
 
         println!("{:?}", icon_hash);
         println!("{:?}", icon_cache.hash_offset);
-        println!("{:?}", icon_cache.lookup("firefox"));
+        println!("{:?}", icon_cache.lookup(icon_name));
     }
 
     #[test]
