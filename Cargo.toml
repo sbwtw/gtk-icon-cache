@@ -2,5 +2,11 @@
 name = "gtk-icon-cache"
 version = "0.1.0"
 authors = ["石博文 <sbw@sbw.so>"]
+description = "A gtk-icon-cache file reader"
+homepage = "https://github.com/sbwtw/gtk-icon-cache"
+repository = "https://github.com/sbwtw/gtk-icon-cache"
+keywords = ["gtk", "icon", "cache"]
+categories = ["caching", "data-structures"]
+license = "GPL-3.0"
 
 [dependencies]
