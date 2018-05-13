@@ -4,7 +4,7 @@
 //! ```
 //! use gtk_icon_cache::*;
 //!
-//! let path = "test/caches/icon-theme.cache".parse().unwrap();
+//! let path = "test/caches/icon-theme.cache";
 //! let mut icon_cache = GtkIconCache::with_file_path(path).unwrap();
 //!
 //! // lookup for `firefox`
@@ -23,7 +23,7 @@ use std::io;
 use std::io::{SeekFrom, ErrorKind, Result, BufRead, Error, Read, BufReader};
 use std::num::Wrapping;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::Path;
 use std::collections::{HashMap, HashSet};
 
 type CARD16 = u16;
@@ -98,9 +98,9 @@ impl GtkIconCache<File> {
     ///
     /// * `path` - Cache file path.
     ///
-    pub fn with_file_path(path: PathBuf) -> Result<Self> {
+    pub fn with_file_path<T: AsRef<Path>>(path: T) -> Result<Self> {
         // read data
-        let f = File::open(&path)?;
+        let f = File::open(&path.as_ref())?;
         let _last_modified = f.metadata().and_then(|x| x.modified()).ok();
         let mut rdr = BufReader::new(f);
 
@@ -196,7 +196,7 @@ mod test {
 
     #[test]
     fn test_icon_cache() {
-        let path = "test/caches/icon-theme.cache".parse().unwrap();
+        let path = "test/caches/icon-theme.cache";
         let mut icon_cache = GtkIconCache::with_file_path(path).unwrap();
 
         let icon_name = "web-browser";
