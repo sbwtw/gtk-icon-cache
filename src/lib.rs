@@ -32,6 +32,7 @@ type CARD32 = u32;
 ///
 /// GtkIconCache
 ///
+#[derive(Debug)]
 pub struct GtkIconCache<R: Read> {
     hash_offset: CARD32,
     directory_list_offset: CARD32,
