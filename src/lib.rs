@@ -5,7 +5,7 @@
 //! use gtk_icon_cache::*;
 //!
 //! let path = "test/caches/icon-theme.cache";
-//! let mut icon_cache = GtkIconCache::with_file_path(path).unwrap();
+//! let icon_cache = GtkIconCache::with_file_path(path).unwrap();
 //!
 //! // lookup for `firefox`
 //! let dirs = icon_cache.lookup("firefox").unwrap();
@@ -19,81 +19,32 @@
 //! - [Qt icon loader](https://codereview.qt-project.org/#/c/125379/9/src/gui/image/qiconloader.cpp)
 //!
 
-use std::io;
-use std::io::{SeekFrom, ErrorKind, Result, BufRead, Error, Read, BufReader};
+extern crate memmap;
+
+use memmap::Mmap;
+
+use std::io::{ErrorKind, Result, Error};
 use std::num::Wrapping;
 use std::fs::File;
 use std::path::Path;
 use std::collections::{HashMap, HashSet};
 
-type CARD16 = u16;
-type CARD32 = u32;
-
 ///
 /// GtkIconCache
 ///
 #[derive(Debug)]
-pub struct GtkIconCache<R: Read> {
-    hash_offset: CARD32,
-    directory_list_offset: CARD32,
+pub struct GtkIconCache {
+    hash_offset: usize,
+    directory_list_offset: usize,
 
-    n_buckets: CARD32,
+    n_buckets: usize,
 
-    dir_names: HashMap<CARD32, String>,
-    reader: BufReader<R>,
+    dir_names: HashMap<usize, String>,
+    file_mmap: Mmap,
+    file_mmap_len: usize,
 }
 
-trait IconCacheReadHelper {
-    fn read16(&mut self) -> Result<CARD16>;
-    fn read16_from(&mut self, offset: u64) -> Result<CARD16> {
-        self.seek(offset).and_then(|_| self.read16())
-    }
-
-    fn read32(&mut self) -> Result<CARD32>;
-    fn read32_from(&mut self, offset: u64) -> Result<CARD32> {
-        self.seek(offset).and_then(|_| self.read32())
-    }
-
-    fn read_cstring(&mut self) -> Result<String>;
-    fn read_cstring_from(&mut self, offset: u64) -> Result<String> {
-        self.seek(offset).and_then(|_| self.read_cstring())
-    }
-
-    fn seek(&mut self, offset: u64) -> Result<u64>;
-}
-
-impl<R: Read + io::Seek> IconCacheReadHelper for BufReader<R> {
-    fn read16(&mut self) -> Result<CARD16> {
-        let mut buf16 = [0; 2];
-
-        self.read_exact(&mut buf16)?;
-
-        Ok((buf16[0] as CARD16) << 8 | buf16[1] as CARD16)
-    }
-
-    fn read32(&mut self) -> Result<CARD32> {
-        let mut buf32 = [0; 4];
-
-        self.read_exact(&mut buf32)?;
-
-        Ok((buf32[0] as CARD32) << 24 |
-           (buf32[1] as CARD32) << 16 |
-           (buf32[2] as CARD32) <<  8 |
-           (buf32[3] as CARD32))
-    }
-
-    fn read_cstring(&mut self) -> Result<String> {
-        let mut buf = vec![];
-        self.read_until(b'\0', &mut buf)?;
-        Ok(String::from_utf8_lossy(&buf[0..buf.len() - 1]).to_string())
-    }
-
-    fn seek(&mut self, offset: u64) -> Result<u64> {
-        io::Seek::seek(self, SeekFrom::Start(offset))
-    }
-}
-
-impl GtkIconCache<File> {
+impl GtkIconCache {
     ///
     /// Create with a cache file.
     ///
@@ -103,90 +54,134 @@ impl GtkIconCache<File> {
         // read data
         let f = File::open(&path.as_ref())?;
         let _last_modified = f.metadata().and_then(|x| x.modified()).ok();
-        let mut rdr = BufReader::new(f);
+        let mmap = unsafe { Mmap::map(&f)? };
+        let len = mmap.len();
 
-        let major_version = rdr.read16()?;
-        let _minor_version = rdr.read16()?;
-        if major_version != 1 {
-            return Err(Error::new(ErrorKind::Other, "major_version not supported."));
+        let r = Self {
+            hash_offset: 0,
+            directory_list_offset: 0,
+
+            n_buckets: 0,
+
+            dir_names: HashMap::new(),
+            file_mmap: mmap,
+            file_mmap_len: len,
+        };
+
+        match r.load_cache() {
+            Some(cache) => Ok(cache),
+            _ => Err(Error::new(ErrorKind::Other, "cache load failed.")),
+        }
+    }
+
+    fn load_cache(mut self) -> Option<Self> {
+
+        let major_version = self.read_card16_from(0)?;
+        let minor_version = self.read_card16_from(2)?;
+
+        self.hash_offset = self.read_card32_from(4)?;
+        self.directory_list_offset = self.read_card32_from(8)?;
+        self.n_buckets = self.read_card32_from(self.hash_offset)?;
+
+        if major_version != 1usize && minor_version != 0usize {
+            return None;
         }
 
-        let hash_offset = rdr.read32()?;
-        let directory_list_offset = rdr.read32()?;
-
-        // directory list
-        let n_directorys = rdr.read32_from(directory_list_offset as u64)?;
+        let n_directorys = self.read_card32_from(self.directory_list_offset)?;
 
         // dump directories
-        let mut dir_names = HashMap::new();
         for i in 0..n_directorys {
-            let offset = rdr.read32_from((directory_list_offset + 4 + 4 * i) as u64)?;
-            if let Ok(dir) = rdr.read_cstring_from(offset as u64) {
-                dir_names.insert(offset, dir);
+            let offset = self.read_card32_from(self.directory_list_offset + 4 + 4 * i)?;
+            if let Some(dir) = self.read_cstring_from(offset as usize) {
+                self.dir_names.insert(offset, dir);
             }
         }
 
-        // hash bucket count
-        rdr.seek(hash_offset as u64)?;
-        let n_buckets = rdr.read32()?;
-
-        Ok(Self {
-            hash_offset,
-            directory_list_offset,
-
-            n_buckets,
-
-            dir_names,
-            reader: rdr,
-        })
+        Some(self)
     }
-}
 
-impl<R: Read + io::Seek> GtkIconCache<R> {
+    fn read_card16_from(&self, offset: usize) -> Option<usize> {
+        let m = &self.file_mmap;
+
+        if offset < self.file_mmap_len {
+            Some((m[offset    ] as usize) << 8 |
+                 (m[offset + 1] as usize))
+        } else {
+            None
+        }
+    }
+
+    fn read_card32_from(&self, offset: usize) -> Option<usize> {
+        let m = &self.file_mmap;
+
+        if offset < self.file_mmap_len {
+            Some((m[offset    ] as usize) << 24 |
+                 (m[offset + 1] as usize) << 16 |
+                 (m[offset + 2] as usize) <<  8 |
+                 (m[offset + 3] as usize))
+        } else {
+            None
+        }
+    }
+
+    fn read_cstring_from(&self, offset: usize) -> Option<String> {
+        let mut terminate = offset;
+
+        while self.file_mmap[terminate] != b'\0' { terminate += 1; }
+
+        if terminate == offset { return None; }
+
+        Some(String::from_utf8_lossy(&self.file_mmap[offset..terminate]).to_string())
+    }
+
     ///
     /// Look up an icon.
     ///
     /// * `name` - icon name.
     ///
-    pub fn lookup<T: AsRef<str>>(&mut self, name: T) -> Result<Vec<&String>> {
+    pub fn lookup<T: AsRef<str>>(&self, name: T) -> Option<Vec<&String>> {
         let icon_hash = icon_name_hash(name.as_ref());
         let bucket_index = icon_hash % self.n_buckets;
         let offset = self.hash_offset + 4 + bucket_index * 4;
 
-        let mut bucket_offset = self.reader.read32_from(offset as u64)?;
-        while let Ok(bucket_name) = self.reader.read32_from(Wrapping(bucket_offset as u64 + 4).0) {
+        let mut bucket_offset = self.read_card32_from(offset)?;
+        while let Some(bucket_name_offset) = self.read_card32_from(bucket_offset + 4) {
             // read bucket name
-            if let Ok(cache) = self.reader.read_cstring_from(bucket_name as u64) {
+            if let Some(cache) = self.read_cstring_from(bucket_name_offset) {
                 if cache == name.as_ref() {
                     let list_offset = bucket_offset + 8;
-                    let list_len = self.reader.read32_from(list_offset as u64)?;
+                    let list_len = self.read_card32_from(list_offset)?;
 
-                    let mut r = HashSet::with_capacity(list_len as usize);
+                    let mut r = HashSet::with_capacity(list_len);
                     // read cached dirs
                     for i in 0..list_len {
-                        if let Ok(dir_index) = self.reader.read16_from((list_offset + 4 + 8 * i) as u64) {
-                            if let Ok(offset) = self.reader.read32_from(self.directory_list_offset as u64 + 4 + (dir_index as u64) * 4) {
+                        if let Some(dir_index) = self.read_card16_from(list_offset + 4 + 8 * i) {
+                            if let Some(offset) = self.read_card32_from(self.directory_list_offset + 4 + dir_index * 4) {
                                 r.insert(offset);
                             }
                         }
                     }
 
                     let ref dir_names = self.dir_names;
-                    return Ok(r.iter().map(|x| dir_names.get(&x).unwrap()).collect())
+                    return Some(r.iter().map(|x| dir_names.get(&x).unwrap()).collect())
                 }
             }
 
-            // find in next bucket
-            bucket_offset = self.reader.read32_from(bucket_offset as u64)?;
+            // find in next
+            bucket_offset = self.read_card32_from(bucket_offset)?;
         }
 
         // not found
-        Ok(vec![])
+        None
     }
 }
 
-fn icon_name_hash<T: AsRef<str>>(name: T) -> u32 {
-    name.as_ref().as_bytes().iter().fold(Wrapping(0), |r, &c| (r << 5) - r + Wrapping(c as u32)).0
+fn icon_name_hash<T: AsRef<str>>(name: T) -> usize {
+    name.as_ref()
+        .as_bytes()
+        .iter()
+        .fold(Wrapping(0u32), |r, &c| (r << 5) - r + Wrapping(c as u32)).0
+        as usize
 }
 
 #[cfg(test)]
@@ -198,14 +193,15 @@ mod test {
     #[test]
     fn test_icon_cache() {
         let path = "test/caches/icon-theme.cache";
-        let mut icon_cache = GtkIconCache::with_file_path(path).unwrap();
+        let icon_cache = GtkIconCache::with_file_path(path).unwrap();
 
         let icon_name = "web-browser";
         let icon_hash = icon_name_hash(icon_name);
 
-        println!("{:?}", icon_hash);
-        println!("{:?}", icon_cache.hash_offset);
-        println!("{:?}", icon_cache.lookup(icon_name));
+        assert_eq!(icon_hash, 2769241519);
+        assert_eq!(icon_cache.hash_offset, 12);
+
+        println!("=> {:?}", icon_cache.lookup(icon_name));
     }
 
     #[test]

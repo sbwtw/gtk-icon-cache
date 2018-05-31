@@ -10,3 +10,4 @@ categories = ["caching", "data-structures"]
 license = "GPL-3.0"
 
 [dependencies]
+memmap = "*"
