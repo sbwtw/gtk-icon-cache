@@ -1,6 +1,6 @@
 [package]
 name = "gtk-icon-cache"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["石博文 <sbw@sbw.so>"]
 description = "A gtk-icon-cache file reader"
 homepage = "https://github.com/sbwtw/gtk-icon-cache"
@@ -10,4 +10,4 @@ categories = ["caching", "data-structures"]
 license = "GPL-3.0"
 
 [dependencies]
-memmap = "*"
+memmap = "0.6"
