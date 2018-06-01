@@ -20,6 +20,8 @@
 //!
 
 extern crate memmap;
+#[macro_use]
+extern crate log;
 
 use memmap::Mmap;
 
@@ -41,7 +43,6 @@ pub struct GtkIconCache {
 
     dir_names: HashMap<usize, String>,
     file_mmap: Mmap,
-    file_mmap_len: usize,
 }
 
 impl GtkIconCache {
@@ -55,7 +56,6 @@ impl GtkIconCache {
         let f = File::open(&path.as_ref())?;
         let _last_modified = f.metadata().and_then(|x| x.modified()).ok();
         let mmap = unsafe { Mmap::map(&f)? };
-        let len = mmap.len();
 
         let r = Self {
             hash_offset: 0,
@@ -65,7 +65,6 @@ impl GtkIconCache {
 
             dir_names: HashMap::new(),
             file_mmap: mmap,
-            file_mmap_len: len,
         };
 
         match r.load_cache() {
@@ -97,13 +96,15 @@ impl GtkIconCache {
             }
         }
 
+        trace!("{:#?}", self);
+
         Some(self)
     }
 
     fn read_card16_from(&self, offset: usize) -> Option<usize> {
         let m = &self.file_mmap;
 
-        if offset < self.file_mmap_len {
+        if offset < self.file_mmap.len() - 2 {
             Some((m[offset    ] as usize) << 8 |
                  (m[offset + 1] as usize))
         } else {
@@ -114,7 +115,7 @@ impl GtkIconCache {
     fn read_card32_from(&self, offset: usize) -> Option<usize> {
         let m = &self.file_mmap;
 
-        if offset < self.file_mmap_len {
+        if offset > 0 && offset < self.file_mmap.len() - 4 {
             Some((m[offset    ] as usize) << 24 |
                  (m[offset + 1] as usize) << 16 |
                  (m[offset + 2] as usize) <<  8 |
@@ -142,14 +143,13 @@ impl GtkIconCache {
     pub fn lookup<T: AsRef<str>>(&self, name: T) -> Option<Vec<&String>> {
         let icon_hash = icon_name_hash(name.as_ref());
         let bucket_index = icon_hash % self.n_buckets;
-        let offset = self.hash_offset + 4 + bucket_index * 4;
 
-        let mut bucket_offset = self.read_card32_from(offset)?;
+        let mut bucket_offset = self.read_card32_from(self.hash_offset + 4 + bucket_index * 4)?;
         while let Some(bucket_name_offset) = self.read_card32_from(bucket_offset + 4) {
             // read bucket name
             if let Some(cache) = self.read_cstring_from(bucket_name_offset) {
                 if cache == name.as_ref() {
-                    let list_offset = bucket_offset + 8;
+                    let list_offset = self.read_card32_from(bucket_offset + 8)?;
                     let list_len = self.read_card32_from(list_offset)?;
 
                     let mut r = HashSet::with_capacity(list_len);
@@ -177,9 +177,10 @@ impl GtkIconCache {
 }
 
 fn icon_name_hash<T: AsRef<str>>(name: T) -> usize {
-    name.as_ref()
-        .as_bytes()
-        .iter()
+
+    let name = name.as_ref().as_bytes();
+
+    name.iter()
         .fold(Wrapping(0u32), |r, &c| (r << 5) - r + Wrapping(c as u32)).0
         as usize
 }
@@ -205,10 +206,23 @@ mod test {
     }
 
     #[test]
+    fn test_cache_test1() {
+        let path = "test/caches/test1.cache";
+        let icon_cache = GtkIconCache::with_file_path(path).unwrap();
+
+        let dirs = icon_cache.lookup("test").unwrap();
+        assert!(dirs.contains(&&"apps/32".to_string()));
+        assert!(dirs.contains(&&"apps/48".to_string()));
+
+        let dirs = icon_cache.lookup("deepin-deb-installer").unwrap();
+        assert!(dirs.contains(&&"apps/16".to_string()));
+        assert!(dirs.contains(&&"apps/32".to_string()));
+        assert!(dirs.contains(&&"apps/48".to_string()));
+        assert!(dirs.contains(&&"apps/scalable".to_string()));
+    }
+
+    #[test]
     fn test_icon_name_hash() {
-        assert_eq!(
-            icon_name_hash("firefox") % 12,
-            icon_name_hash("image-generic") % 12
-        );
+        assert_eq!(icon_name_hash("deepin-deb-installer"), 1927089920);
     }
 }
