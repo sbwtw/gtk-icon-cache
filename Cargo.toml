@@ -11,4 +11,4 @@ license = "GPL-3.0"
 
 [dependencies]
 memmap = "0.6"
-log = "*"
+log = "0.4"
