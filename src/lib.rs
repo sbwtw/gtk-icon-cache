@@ -30,11 +30,12 @@ use std::num::Wrapping;
 use std::fs::File;
 use std::path::Path;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 ///
 /// GtkIconCache
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GtkIconCache {
     hash_offset: usize,
     directory_list_offset: usize,
@@ -42,7 +43,7 @@ pub struct GtkIconCache {
     n_buckets: usize,
 
     dir_names: HashMap<usize, String>,
-    file_mmap: Mmap,
+    file_mmap: Arc<Mmap>,
 }
 
 impl GtkIconCache {
@@ -64,7 +65,7 @@ impl GtkIconCache {
             n_buckets: 0,
 
             dir_names: HashMap::new(),
-            file_mmap: mmap,
+            file_mmap: Arc::new(mmap),
         };
 
         match r.load_cache() {
